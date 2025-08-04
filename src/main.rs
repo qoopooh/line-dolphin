@@ -1,4 +1,5 @@
 mod dolphin;
+mod types;
 
 use axum::{
     body::Bytes,
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::env;
 use tracing::{error, info};
+use types::{ReplyMessage, ReplyRequest};
 
 #[derive(Debug, Deserialize)]
 struct WebhookRequest {
@@ -63,20 +65,6 @@ struct Source {
     group_id: Option<String>,
     #[serde(rename = "roomId")]
     room_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ReplyMessage {
-    #[serde(rename = "type")]
-    message_type: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReplyRequest {
-    #[serde(rename = "replyToken")]
-    reply_token: String,
-    messages: Vec<ReplyMessage>,
 }
 
 fn verify_signature(body: &[u8], signature: &str, channel_secret: &str) -> bool {
@@ -164,9 +152,9 @@ async fn webhook_handler(
                                 continue;
                             }
 
-                            // Send dolphin reply only for messages starting with "@dolphin"
+                            // Send dolphin reply
                             if let Err(e) =
-                                dolphin::send_reply(reply_token, text, event.source.user_id).await
+                                dolphin::send_reply(reply_token, text, &event.source).await
                             {
                                 error!("Failed to send dolphin reply: {}", e);
                             }

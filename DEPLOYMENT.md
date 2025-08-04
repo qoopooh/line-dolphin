@@ -35,6 +35,16 @@ docker run -p $PORT:3000 \
 2. Set webhook URL: `https://your-domain.com/webhook`
 3. Enable "Use webhook"
 
+## Development
+
+### Code Formatting
+
+Format the source code using rustfmt:
+
+```bash
+rustfmt --edition 2021 src/*.rs
+```
+
 ## Security
 
 - Use HTTPS in production
