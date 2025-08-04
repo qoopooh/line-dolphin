@@ -1,11 +1,181 @@
 use crate::types::{ReplyMessage, ReplyRequest};
 use std::env;
-use tracing::info;
+use std::fs;
+use tracing::{error, info};
+
+#[derive(Debug)]
+struct BroadcastConfig {
+    allowed_user_id: String,
+    target_group_id: String,
+}
+
+impl BroadcastConfig {
+    fn from_env() -> Option<Self> {
+        env::var("DOLPHIN_USER_TO_GROUP").ok().and_then(|var| {
+            let parts: Vec<&str> = var.split(':').collect();
+            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                Some(BroadcastConfig {
+                    allowed_user_id: parts[0].to_string(),
+                    target_group_id: parts[1].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn get_reply_state_file() -> String {
+    env::var("REPLY_STATE_FILE").unwrap_or_else(|_| "reply_state.txt".to_string())
+}
+
+fn is_replies_enabled() -> bool {
+    let state_file = get_reply_state_file();
+    if let Ok(content) = fs::read_to_string(&state_file) {
+        content.trim() == "enabled"
+    } else {
+        // Default to enabled if file doesn't exist or can't be read
+        true
+    }
+}
+
+fn set_replies_enabled(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let state_file = get_reply_state_file();
+    let state = if enabled { "enabled" } else { "disabled" };
+    fs::write(&state_file, state)?;
+    Ok(())
+}
+
+pub async fn send_reply(
+    reply_token: &str,
+    text: &str,
+    source: &crate::Source,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Get user ID for checksum calculation
+    let user_id = source.user_id.as_deref().unwrap_or("unknown");
+
+    // Check if source has group-id
+    let has_group_id = source.group_id.is_some();
+
+    // For group messages, check if the message starts with "@dolphin" or "@all"
+    let trimmed_text = text.trim().to_lowercase();
+    let is_dolphin_message = trimmed_text.starts_with("@dolphin");
+    let is_all_message = trimmed_text.starts_with("@all");
+    let is_off_command = trimmed_text.starts_with("@off");
+    let is_on_command = trimmed_text.starts_with("@on");
+
+    // Handle @off and @on commands from authorized user
+    if is_off_command || is_on_command {
+        let broadcast_config = BroadcastConfig::from_env();
+        if let Some(config) = &broadcast_config {
+            if user_id == &config.allowed_user_id {
+                let enable = is_on_command;
+                if set_replies_enabled(enable).is_ok() {
+                    let status = if enable { "enabled" } else { "disabled" };
+                    let reply_text = format!("🔧 Replies have been {}", status);
+                    send_line_reply(reply_token, &reply_text).await?;
+                    info!("Reply status changed to {} by user {}", status, user_id);
+                    return Ok(());
+                } else {
+                    error!("Failed to save reply state");
+                    let reply_text = "❌ Failed to change reply status".to_string();
+                    send_line_reply(reply_token, &reply_text).await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Check if replies are enabled
+    if !is_replies_enabled() {
+        info!(
+            "Replies are disabled, ignoring message from user {}",
+            user_id
+        );
+        return Ok(());
+    }
+
+    if !is_dolphin_message && !is_all_message {
+        if has_group_id {
+            // Ignore messages that don't start with "@dolphin" or "@all" in group chats
+            return Ok(());
+        }
+
+        // For direct messages, reply to all messages
+        let reply_text = create_reply(user_id, text);
+        send_line_reply(reply_token, &reply_text).await?;
+        info!("Reply sent (user_id: {}): {}", user_id, text);
+        return Ok(());
+    }
+
+    // Get broadcast config once to avoid repeated parsing
+    let broadcast_config = BroadcastConfig::from_env();
+    let (message_content, is_broadcast, authorized_broadcast) = if is_all_message {
+        // Extract the message content after "@all"
+        let content = text.trim()[4..].trim(); // Remove "@all" prefix
+
+        // Check if user is authorized to broadcast
+        let authorized = if let Some(config) = &broadcast_config {
+            user_id == &config.allowed_user_id
+        } else {
+            false
+        };
+
+        (content, true, authorized)
+    } else {
+        // Extract the message content after "@dolphin"
+        let content = text.trim()[8..].trim(); // Remove "@dolphin" prefix
+        (content, false, false)
+    };
+
+    if message_content.is_empty() {
+        return Ok(());
+    }
+
+    // Create reply based on message type
+    let group_id = source.group_id.as_deref().unwrap_or("unknown");
+    let reply_text = if has_group_id {
+        // For @dolphin and @all messages, use the standard checksum logic
+        create_reply(user_id, message_content)
+    } else {
+        if authorized_broadcast {
+            // Send broadcast message to target group
+            if let Some(config) = &broadcast_config {
+                if let Err(e) = send_push_message(&config.target_group_id, message_content).await {
+                    error!("Failed to send broadcast message: {}", e);
+                    format!("❌ Failed to broadcast message: \"{}\"", message_content)
+                } else {
+                    format!(
+                        "📢 Broadcast message sent to group: \"{}\"",
+                        message_content
+                    )
+                }
+            } else {
+                format!("❌ Broadcast configuration not found")
+            }
+        } else if is_broadcast {
+            // User not authorized to broadcast
+            format!("❌ You are not authorized to use @all broadcasts")
+        } else {
+            create_reply(user_id, message_content)
+        }
+    };
+
+    send_line_reply(reply_token, &reply_text).await?;
+    info!(
+        "Reply sent (group_id:{}, broadcast:{}, user_id:{}): {}",
+        group_id,
+        is_broadcast,
+        &user_id[0..4],
+        message_content
+    );
+    Ok(())
+}
 
 /// Creates a reply based on checksum of user ID and message
 /// Returns "yes" if the sum is even, "no" if odd
 /// Special case: if message contains both "buy" and "nuclear", always returns "yes"
-pub fn create_reply(user_id: &str, message: &str) -> String {
+fn create_reply(user_id: &str, message: &str) -> String {
     let lower_message = message.to_lowercase();
 
     // Special case: if message contains both "buy" and "nuclear", always return "yes"
@@ -64,42 +234,39 @@ async fn send_line_reply(
     Ok(())
 }
 
-pub async fn send_reply(
-    reply_token: &str,
-    text: &str,
-    source: &crate::Source,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Get user ID for checksum calculation
-    let user_id = source.user_id.as_deref().unwrap_or("unknown");
+async fn send_push_message(to: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let channel_access_token =
+        env::var("LINE_CHANNEL_ACCESS_TOKEN").expect("LINE_CHANNEL_ACCESS_TOKEN must be set");
 
-    // Check if source has group-id
-    let has_group_id = source.group_id.is_some();
-
-    // Direct message from user
-    if !has_group_id {
-        // Create reply using checksum logic for the entire message
-        let reply_text = create_reply(user_id, text);
-        send_line_reply(reply_token, &reply_text).await?;
-        info!("Reply sent (user_id: {}): {}", user_id, text);
-        return Ok(());
+    #[derive(serde::Serialize)]
+    struct PushRequest {
+        to: String,
+        messages: Vec<ReplyMessage>,
     }
 
-    // For group messages, check if the message starts with "@dolphin"
-    if !text.trim().to_lowercase().starts_with("@dolphin") {
-        return Ok(());
+    let push_request = PushRequest {
+        to: to.to_string(),
+        messages: vec![ReplyMessage {
+            message_type: "text".to_string(),
+            text: text.to_string(),
+        }],
+    };
+
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post("https://api.line.me/v2/bot/message/push")
+        .header("Authorization", format!("Bearer {}", channel_access_token))
+        .header("Content-Type", "application/json")
+        .json(&push_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await?;
+        return Err(format!("LINE API push error: {}", error_text).into());
     }
 
-    // Extract the message content after "@dolphin"
-    let text = text.trim()[8..].trim(); // Remove "@dolphin" prefix
-    if text.is_empty() {
-        info!("Message only contains '@dolphin' with no additional content");
-        return Ok(());
-    }
-
-    // Create reply using checksum logic
-    let group_id = source.group_id.as_deref().unwrap_or("unknown");
-    let reply_text = create_reply(user_id, text);
-    send_line_reply(reply_token, &reply_text).await?;
-    info!("Reply sent (group_id: {}): {}", group_id, text);
+    info!("Push message sent to {}: {}", to, text);
     Ok(())
 }

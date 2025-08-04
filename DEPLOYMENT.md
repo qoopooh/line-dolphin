@@ -42,7 +42,7 @@ docker run -p $PORT:3000 \
 Format the source code using rustfmt:
 
 ```bash
-rustfmt --edition 2021 src/*.rs
+rustfmt --edition 2021 */*.rs
 ```
 
 ## Security
