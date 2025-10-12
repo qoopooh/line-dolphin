@@ -101,7 +101,7 @@ pub async fn send_reply(
     let is_on_command = trimmed_text.starts_with("@on");
 
     // Check for @all+XXXX pattern (send to specific group by last 4 digits)
-    let all_plus_pattern = regex::Regex::new(r"^@all\+(\d{4})").unwrap();
+    let all_plus_pattern = regex::Regex::new(r"^@all\+(\w{4})").unwrap();
     let is_all_plus_message = all_plus_pattern.is_match(&trimmed_text);
     let target_group_digits = if is_all_plus_message {
         all_plus_pattern.captures(&trimmed_text)
