@@ -1,4 +1,5 @@
 use crate::types::{ReplyMessage, ReplyRequest};
+use regex;
 use std::env;
 use std::fs;
 use tracing::{error, info};
@@ -10,18 +11,53 @@ struct BroadcastConfig {
 }
 
 impl BroadcastConfig {
-    fn from_env() -> Option<Self> {
-        env::var("DOLPHIN_USER_TO_GROUP").ok().and_then(|var| {
-            let parts: Vec<&str> = var.split(':').collect();
-            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                Some(BroadcastConfig {
-                    allowed_user_id: parts[0].to_string(),
-                    target_group_id: parts[1].to_string(),
-                })
-            } else {
-                None
+    fn from_env() -> Vec<Self> {
+        let mut configs = Vec::new();
+
+        // Check for numbered configurations (DOLPHIN_USER_TO_GROUP1, DOLPHIN_USER_TO_GROUP2, etc.)
+        for i in 1..=10 {  // Support up to 10 configurations
+            let env_key = format!("DOLPHIN_USER_TO_GROUP{}", i);
+            if let Ok(var) = env::var(&env_key) {
+                if let Some(config) = Self::parse_config(&var) {
+                    configs.push(config);
+                }
             }
-        })
+        }
+
+        // Also check for the original DOLPHIN_USER_TO_GROUP (for backward compatibility)
+        if let Ok(var) = env::var("DOLPHIN_USER_TO_GROUP") {
+            if let Some(config) = Self::parse_config(&var) {
+                configs.push(config);
+            }
+        }
+
+        configs
+    }
+
+    fn parse_config(var: &str) -> Option<Self> {
+        let parts: Vec<&str> = var.split(':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            Some(BroadcastConfig {
+                allowed_user_id: parts[0].to_string(),
+                target_group_id: parts[1].to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn is_user_authorized(&self, user_id: &str) -> bool {
+        self.allowed_user_id == user_id
+    }
+
+    fn find_by_user_id<'a>(configs: &'a [Self], user_id: &str) -> Option<&'a Self> {
+        configs.iter().find(|config| config.is_user_authorized(user_id))
+    }
+
+    fn has_authorized_user(configs: &[Self]) -> bool {
+        // print configs
+        println!("configs: {:?}", configs);
+        !configs.is_empty()
     }
 }
 
@@ -57,18 +93,29 @@ pub async fn send_reply(
     // Check if source has group-id
     let has_group_id = source.group_id.is_some();
 
-    // For group messages, check if the message starts with "@dolphin" or "@all"
+    // For group messages, check if the message starts with "@dolphin"
     let trimmed_text = text.trim().to_lowercase();
     let is_dolphin_message = trimmed_text.starts_with("@dolphin");
-    let is_all_message = trimmed_text.starts_with("@all");
     let is_off_command = trimmed_text.starts_with("@off");
     let is_on_command = trimmed_text.starts_with("@on");
 
+    // Check for @all+XXXX pattern (send to specific group by last 4 digits) or "@all"
+    let all_plus_pattern = regex::Regex::new(r"^@all\+(\w{4})").unwrap();
+    let is_all_plus_message = all_plus_pattern.is_match(&trimmed_text);
+    let target_group_digits = if is_all_plus_message {
+        all_plus_pattern.captures(&trimmed_text)
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string())
+    } else {
+        None
+    };
+    let is_all_message = target_group_digits.is_none() && trimmed_text.starts_with("@all");
+
     // Handle @off and @on commands from authorized user
     if is_off_command || is_on_command {
-        let broadcast_config = BroadcastConfig::from_env();
-        if let Some(config) = &broadcast_config {
-            if user_id == &config.allowed_user_id {
+        let broadcast_configs = BroadcastConfig::from_env();
+        if BroadcastConfig::has_authorized_user(&broadcast_configs) {
+            if BroadcastConfig::find_by_user_id(&broadcast_configs, user_id).is_some() {
                 let enable = is_on_command;
                 if set_replies_enabled(enable).is_ok() {
                     let status = if enable { "enabled" } else { "disabled" };
@@ -82,7 +129,16 @@ pub async fn send_reply(
                     send_line_reply(reply_token, &reply_text).await?;
                     return Ok(());
                 }
+            } else {
+                let reply_text = "❌ You are not authorized to control reply settings".to_string();
+                send_line_reply(reply_token, &reply_text).await?;
+                info!("Unauthorized attempt to control replies by user {}", user_id);
+                return Ok(());
             }
+        } else {
+            let reply_text = "❌ Broadcast configuration not found".to_string();
+            send_line_reply(reply_token, &reply_text).await?;
+            return Ok(());
         }
     }
 
@@ -95,7 +151,7 @@ pub async fn send_reply(
         return Ok(());
     }
 
-    if !is_dolphin_message && !is_all_message {
+    if !is_dolphin_message && !is_all_message && !is_all_plus_message {
         if has_group_id {
             // Ignore messages that don't start with "@dolphin" or "@all" in group chats
             return Ok(());
@@ -108,24 +164,33 @@ pub async fn send_reply(
         return Ok(());
     }
 
-    // Get broadcast config once to avoid repeated parsing
-    let broadcast_config = BroadcastConfig::from_env();
-    let (message_content, is_broadcast, authorized_broadcast) = if is_all_message {
+    // Get broadcast configs once to avoid repeated parsing
+    let broadcast_configs = BroadcastConfig::from_env();
+    let (message_content, is_broadcast, authorized_broadcast, target_group_id) = if is_all_plus_message {
+        // Extract the message content after "@all+XXXX"
+        let prefix_len = format!("@all+{}", target_group_digits.as_ref().unwrap()).len();
+        let content = text.trim()[prefix_len..].trim();
+
+        // For @all+XXXX, find the group that ends with XXXX from all configured groups
+        let target_group = broadcast_configs.iter()
+            .find(|config| config.target_group_id.ends_with(target_group_digits.as_ref().unwrap().as_str()))
+            .map(|config| config.target_group_id.clone());
+
+        let authorized = target_group.is_some();
+
+        (content.to_string(), true, authorized, target_group)
+    } else if is_all_message {
         // Extract the message content after "@all"
         let content = text.trim()[4..].trim(); // Remove "@all" prefix
 
         // Check if user is authorized to broadcast
-        let authorized = if let Some(config) = &broadcast_config {
-            user_id == &config.allowed_user_id
-        } else {
-            false
-        };
+        let authorized = BroadcastConfig::find_by_user_id(&broadcast_configs, user_id).is_some();
 
-        (content, true, authorized)
+        (content.to_string(), true, authorized, None)
     } else {
         // Extract the message content after "@dolphin"
         let content = text.trim()[8..].trim(); // Remove "@dolphin" prefix
-        (content, false, false)
+        (content.to_string(), false, false, None)
     };
 
     if message_content.is_empty() {
@@ -136,12 +201,22 @@ pub async fn send_reply(
     let group_id = source.group_id.as_deref().unwrap_or("unknown");
     let reply_text = if has_group_id {
         // For @dolphin and @all messages, use the standard checksum logic
-        create_reply(user_id, message_content)
+        create_reply(user_id, &message_content)
     } else {
         if authorized_broadcast {
             // Send broadcast message to target group
-            if let Some(config) = &broadcast_config {
-                if let Err(e) = send_push_message(&config.target_group_id, message_content).await {
+            let target_group = if let Some(group_id) = &target_group_id {
+                // @all+XXXX case - use the found group
+                group_id.clone()
+            } else {
+                // @all case - use user's configured group
+                BroadcastConfig::find_by_user_id(&broadcast_configs, user_id)
+                    .map(|config| config.target_group_id.clone())
+                    .unwrap_or_default()
+            };
+
+            if !target_group.is_empty() {
+                if let Err(e) = send_push_message(&target_group, &message_content).await {
                     error!("Failed to send broadcast message: {}", e);
                     format!("❌ Failed to broadcast message: \"{}\"", message_content)
                 } else {
@@ -155,9 +230,13 @@ pub async fn send_reply(
             }
         } else if is_broadcast {
             // User not authorized to broadcast
-            format!("❌ You are not authorized to use @all broadcasts")
+            if is_all_plus_message {
+                format!("❌ No group found with last 4 digits: {}", target_group_digits.as_ref().unwrap_or(&"".to_string()))
+            } else {
+                format!("❌ You are not authorized to use @all broadcasts")
+            }
         } else {
-            create_reply(user_id, message_content)
+            create_reply(user_id, &message_content)
         }
     };
 
