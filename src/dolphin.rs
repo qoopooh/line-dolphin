@@ -10,18 +10,51 @@ struct BroadcastConfig {
 }
 
 impl BroadcastConfig {
-    fn from_env() -> Option<Self> {
-        env::var("DOLPHIN_USER_TO_GROUP").ok().and_then(|var| {
-            let parts: Vec<&str> = var.split(':').collect();
-            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                Some(BroadcastConfig {
-                    allowed_user_id: parts[0].to_string(),
-                    target_group_id: parts[1].to_string(),
-                })
-            } else {
-                None
+    fn from_env() -> Vec<Self> {
+        let mut configs = Vec::new();
+
+        // Check for numbered configurations (DOLPHIN_USER_TO_GROUP1, DOLPHIN_USER_TO_GROUP2, etc.)
+        for i in 1..=10 {  // Support up to 10 configurations
+            let env_key = format!("DOLPHIN_USER_TO_GROUP{}", i);
+            if let Ok(var) = env::var(&env_key) {
+                if let Some(config) = Self::parse_config(&var) {
+                    configs.push(config);
+                }
             }
-        })
+        }
+
+        // Also check for the original DOLPHIN_USER_TO_GROUP (for backward compatibility)
+        if let Ok(var) = env::var("DOLPHIN_USER_TO_GROUP") {
+            if let Some(config) = Self::parse_config(&var) {
+                configs.push(config);
+            }
+        }
+
+        configs
+    }
+
+    fn parse_config(var: &str) -> Option<Self> {
+        let parts: Vec<&str> = var.split(':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            Some(BroadcastConfig {
+                allowed_user_id: parts[0].to_string(),
+                target_group_id: parts[1].to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn is_user_authorized(&self, user_id: &str) -> bool {
+        self.allowed_user_id == user_id
+    }
+
+    fn find_by_user_id<'a>(configs: &'a [Self], user_id: &str) -> Option<&'a Self> {
+        configs.iter().find(|config| config.is_user_authorized(user_id))
+    }
+
+    fn has_authorized_user(configs: &[Self]) -> bool {
+        !configs.is_empty()
     }
 }
 
@@ -66,9 +99,9 @@ pub async fn send_reply(
 
     // Handle @off and @on commands from authorized user
     if is_off_command || is_on_command {
-        let broadcast_config = BroadcastConfig::from_env();
-        if let Some(config) = &broadcast_config {
-            if user_id == &config.allowed_user_id {
+        let broadcast_configs = BroadcastConfig::from_env();
+        if BroadcastConfig::has_authorized_user(&broadcast_configs) {
+            if BroadcastConfig::find_by_user_id(&broadcast_configs, user_id).is_some() {
                 let enable = is_on_command;
                 if set_replies_enabled(enable).is_ok() {
                     let status = if enable { "enabled" } else { "disabled" };
@@ -82,7 +115,16 @@ pub async fn send_reply(
                     send_line_reply(reply_token, &reply_text).await?;
                     return Ok(());
                 }
+            } else {
+                let reply_text = "❌ You are not authorized to control reply settings".to_string();
+                send_line_reply(reply_token, &reply_text).await?;
+                info!("Unauthorized attempt to control replies by user {}", user_id);
+                return Ok(());
             }
+        } else {
+            let reply_text = "❌ Broadcast configuration not found".to_string();
+            send_line_reply(reply_token, &reply_text).await?;
+            return Ok(());
         }
     }
 
@@ -108,18 +150,14 @@ pub async fn send_reply(
         return Ok(());
     }
 
-    // Get broadcast config once to avoid repeated parsing
-    let broadcast_config = BroadcastConfig::from_env();
+    // Get broadcast configs once to avoid repeated parsing
+    let broadcast_configs = BroadcastConfig::from_env();
     let (message_content, is_broadcast, authorized_broadcast) = if is_all_message {
         // Extract the message content after "@all"
         let content = text.trim()[4..].trim(); // Remove "@all" prefix
 
         // Check if user is authorized to broadcast
-        let authorized = if let Some(config) = &broadcast_config {
-            user_id == &config.allowed_user_id
-        } else {
-            false
-        };
+        let authorized = BroadcastConfig::find_by_user_id(&broadcast_configs, user_id).is_some();
 
         (content, true, authorized)
     } else {
@@ -140,7 +178,7 @@ pub async fn send_reply(
     } else {
         if authorized_broadcast {
             // Send broadcast message to target group
-            if let Some(config) = &broadcast_config {
+            if let Some(config) = BroadcastConfig::find_by_user_id(&broadcast_configs, user_id) {
                 if let Err(e) = send_push_message(&config.target_group_id, message_content).await {
                     error!("Failed to send broadcast message: {}", e);
                     format!("❌ Failed to broadcast message: \"{}\"", message_content)
