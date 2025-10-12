@@ -93,14 +93,13 @@ pub async fn send_reply(
     // Check if source has group-id
     let has_group_id = source.group_id.is_some();
 
-    // For group messages, check if the message starts with "@dolphin" or "@all"
+    // For group messages, check if the message starts with "@dolphin"
     let trimmed_text = text.trim().to_lowercase();
     let is_dolphin_message = trimmed_text.starts_with("@dolphin");
-    let is_all_message = trimmed_text.starts_with("@all");
     let is_off_command = trimmed_text.starts_with("@off");
     let is_on_command = trimmed_text.starts_with("@on");
 
-    // Check for @all+XXXX pattern (send to specific group by last 4 digits)
+    // Check for @all+XXXX pattern (send to specific group by last 4 digits) or "@all"
     let all_plus_pattern = regex::Regex::new(r"^@all\+(\w{4})").unwrap();
     let is_all_plus_message = all_plus_pattern.is_match(&trimmed_text);
     let target_group_digits = if is_all_plus_message {
@@ -110,6 +109,7 @@ pub async fn send_reply(
     } else {
         None
     };
+    let is_all_message = target_group_digits.is_none() && trimmed_text.starts_with("@all");
 
     // Handle @off and @on commands from authorized user
     if is_off_command || is_on_command {
