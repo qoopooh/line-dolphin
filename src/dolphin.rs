@@ -1,4 +1,5 @@
 use crate::types::{ReplyMessage, ReplyRequest};
+use regex;
 use std::env;
 use std::fs;
 use tracing::{error, info};
@@ -54,6 +55,8 @@ impl BroadcastConfig {
     }
 
     fn has_authorized_user(configs: &[Self]) -> bool {
+        // print configs
+        println!("configs: {:?}", configs);
         !configs.is_empty()
     }
 }
@@ -97,6 +100,17 @@ pub async fn send_reply(
     let is_off_command = trimmed_text.starts_with("@off");
     let is_on_command = trimmed_text.starts_with("@on");
 
+    // Check for @all+XXXX pattern (send to specific group by last 4 digits)
+    let all_plus_pattern = regex::Regex::new(r"^@all\+(\d{4})").unwrap();
+    let is_all_plus_message = all_plus_pattern.is_match(&trimmed_text);
+    let target_group_digits = if is_all_plus_message {
+        all_plus_pattern.captures(&trimmed_text)
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string())
+    } else {
+        None
+    };
+
     // Handle @off and @on commands from authorized user
     if is_off_command || is_on_command {
         let broadcast_configs = BroadcastConfig::from_env();
@@ -137,7 +151,7 @@ pub async fn send_reply(
         return Ok(());
     }
 
-    if !is_dolphin_message && !is_all_message {
+    if !is_dolphin_message && !is_all_message && !is_all_plus_message {
         if has_group_id {
             // Ignore messages that don't start with "@dolphin" or "@all" in group chats
             return Ok(());
@@ -152,18 +166,31 @@ pub async fn send_reply(
 
     // Get broadcast configs once to avoid repeated parsing
     let broadcast_configs = BroadcastConfig::from_env();
-    let (message_content, is_broadcast, authorized_broadcast) = if is_all_message {
+    let (message_content, is_broadcast, authorized_broadcast, target_group_id) = if is_all_plus_message {
+        // Extract the message content after "@all+XXXX"
+        let prefix_len = format!("@all+{}", target_group_digits.as_ref().unwrap()).len();
+        let content = text.trim()[prefix_len..].trim();
+
+        // For @all+XXXX, find the group that ends with XXXX from all configured groups
+        let target_group = broadcast_configs.iter()
+            .find(|config| config.target_group_id.ends_with(target_group_digits.as_ref().unwrap().as_str()))
+            .map(|config| config.target_group_id.clone());
+
+        let authorized = target_group.is_some();
+
+        (content.to_string(), true, authorized, target_group)
+    } else if is_all_message {
         // Extract the message content after "@all"
         let content = text.trim()[4..].trim(); // Remove "@all" prefix
 
         // Check if user is authorized to broadcast
         let authorized = BroadcastConfig::find_by_user_id(&broadcast_configs, user_id).is_some();
 
-        (content, true, authorized)
+        (content.to_string(), true, authorized, None)
     } else {
         // Extract the message content after "@dolphin"
         let content = text.trim()[8..].trim(); // Remove "@dolphin" prefix
-        (content, false, false)
+        (content.to_string(), false, false, None)
     };
 
     if message_content.is_empty() {
@@ -174,12 +201,22 @@ pub async fn send_reply(
     let group_id = source.group_id.as_deref().unwrap_or("unknown");
     let reply_text = if has_group_id {
         // For @dolphin and @all messages, use the standard checksum logic
-        create_reply(user_id, message_content)
+        create_reply(user_id, &message_content)
     } else {
         if authorized_broadcast {
             // Send broadcast message to target group
-            if let Some(config) = BroadcastConfig::find_by_user_id(&broadcast_configs, user_id) {
-                if let Err(e) = send_push_message(&config.target_group_id, message_content).await {
+            let target_group = if let Some(group_id) = &target_group_id {
+                // @all+XXXX case - use the found group
+                group_id.clone()
+            } else {
+                // @all case - use user's configured group
+                BroadcastConfig::find_by_user_id(&broadcast_configs, user_id)
+                    .map(|config| config.target_group_id.clone())
+                    .unwrap_or_default()
+            };
+
+            if !target_group.is_empty() {
+                if let Err(e) = send_push_message(&target_group, &message_content).await {
                     error!("Failed to send broadcast message: {}", e);
                     format!("❌ Failed to broadcast message: \"{}\"", message_content)
                 } else {
@@ -193,9 +230,13 @@ pub async fn send_reply(
             }
         } else if is_broadcast {
             // User not authorized to broadcast
-            format!("❌ You are not authorized to use @all broadcasts")
+            if is_all_plus_message {
+                format!("❌ No group found with last 4 digits: {}", target_group_digits.as_ref().unwrap_or(&"".to_string()))
+            } else {
+                format!("❌ You are not authorized to use @all broadcasts")
+            }
         } else {
-            create_reply(user_id, message_content)
+            create_reply(user_id, &message_content)
         }
     };
 
