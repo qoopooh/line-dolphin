@@ -104,14 +104,10 @@ pub async fn send_reply(
 
     // Check for @all+XXXX pattern (send to specific group by last 4 digits) or "@all"
     let all_plus_pattern = regex::Regex::new(r"^@all\+(\w{4})").unwrap();
-    let target_group_digits = if is_all_plus_message {
-        all_plus_pattern
-            .captures(&trimmed_text)
-            .and_then(|cap| cap.get(1))
-            .map(|m| m.as_str().to_string())
-    } else {
-        None
-    };
+    let target_group_digits = all_plus_pattern
+        .captures(&trimmed_text)
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().to_string());
     let is_all_plus_message = target_group_digits.is_some();
     let is_all_message = target_group_digits.is_none() && trimmed_text.starts_with("@all");
 
