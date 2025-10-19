@@ -104,7 +104,6 @@ pub async fn send_reply(
 
     // Check for @all+XXXX pattern (send to specific group by last 4 digits) or "@all"
     let all_plus_pattern = regex::Regex::new(r"^@all\+(\w{4})").unwrap();
-    let is_all_plus_message = all_plus_pattern.is_match(&trimmed_text);
     let target_group_digits = if is_all_plus_message {
         all_plus_pattern
             .captures(&trimmed_text)
@@ -113,6 +112,7 @@ pub async fn send_reply(
     } else {
         None
     };
+    let is_all_plus_message = target_group_digits.is_some();
     let is_all_message = target_group_digits.is_none() && trimmed_text.starts_with("@all");
 
     // Handle @off and @on commands from authorized user
@@ -133,19 +133,7 @@ pub async fn send_reply(
                     send_line_reply(reply_token, &reply_text).await?;
                     return Ok(());
                 }
-            } else {
-                let reply_text = "❌ You are not authorized to control reply settings".to_string();
-                send_line_reply(reply_token, &reply_text).await?;
-                info!(
-                    "Unauthorized attempt to control replies by user {}",
-                    user_id
-                );
-                return Ok(());
             }
-        } else {
-            let reply_text = "❌ Broadcast configuration not found".to_string();
-            send_line_reply(reply_token, &reply_text).await?;
-            return Ok(());
         }
     }
 
