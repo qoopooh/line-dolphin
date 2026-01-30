@@ -40,8 +40,41 @@ Dolphin: yes
 
 ## Technical Stuff
 
-- Built with Rust and Axum
+- Built with Rust and Axum (or Cloudflare Workers)
 - Uses HMAC signature verification for security
-- Runs on any port (default: 3000)
+- Runs on any port (default: 3000) or on Cloudflare's edge network
+
+## Deployment Options
+
+### Option 1: Traditional Server (Docker/VPS)
+See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker and VPS deployment.
+
+### Option 2: Cloudflare Workers (Recommended)
+Deploy to Cloudflare's global edge network for free:
+- ✅ Free tier: 100,000 requests/day
+- ✅ Global CDN (low latency worldwide)
+- ✅ No server management
+- ✅ Automatic scaling
+
+See [DEPLOYMENT-WORKERS.md](DEPLOYMENT-WORKERS.md) for detailed instructions.
+
+Quick deploy to Workers:
+```bash
+# Install dependencies
+npm install -g wrangler
+cargo install worker-build
+
+# Setup
+cp Cargo.workers.toml Cargo.toml
+npx wrangler login
+npx wrangler kv:namespace create DOLPHIN_REPLY_STATE
+
+# Set secrets
+npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+npx wrangler secret put LINE_CHANNEL_SECRET
+
+# Deploy
+npx wrangler deploy
+```
 
 The dolphin awaits your questions! 🐬✨

@@ -1,0 +1,20 @@
+name = "line-dolphin"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-01-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[[kv_namespaces]]
+binding = "DOLPHIN_REPLY_STATE"
+id = "271fcd76e725433f855521485fcd68fc"
+preview_id = "aa22be950c1449b686aa20c250172f12"
+
+[vars]
+# Non-sensitive environment variables
+
+# Use 'wrangler secret put' for sensitive values:
+# wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+# wrangler secret put LINE_CHANNEL_SECRET
+# wrangler secret put DOLPHIN_USER_TO_GROUP1
+# wrangler secret put DOLPHIN_USER_TO_GROUP2
