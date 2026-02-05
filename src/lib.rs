@@ -142,6 +142,73 @@ async fn set_replies_enabled(kv: &kv::KvStore, enabled: bool) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct MessageHistory {
+    messages: Vec<String>,
+}
+
+impl MessageHistory {
+    fn new() -> Self {
+        MessageHistory {
+            messages: Vec::new(),
+        }
+    }
+
+    fn add_message(&mut self, message: String) {
+        self.messages.push(message);
+        // Keep only the last 2 messages
+        if self.messages.len() > 2 {
+            self.messages.remove(0);
+        }
+    }
+
+    fn get_current_message(&self) -> Option<&String> {
+        self.messages.last()
+    }
+}
+
+async fn get_message_history(kv: &kv::KvStore, group_id: &str) -> MessageHistory {
+    let key = format!("msg_history:{}", group_id);
+    match kv.get(&key).json::<MessageHistory>().await {
+        Ok(Some(history)) => history,
+        _ => MessageHistory::new(),
+    }
+}
+
+async fn save_message_history(
+    kv: &kv::KvStore,
+    group_id: &str,
+    history: &MessageHistory,
+) -> Result<()> {
+    let key = format!("msg_history:{}", group_id);
+    kv.put(&key, serde_json::to_string(history)?)?
+        .execute()
+        .await?;
+    Ok(())
+}
+
+async fn check_repeated_message(
+    current_message: &str,
+    group_id: &str,
+    kv: &kv::KvStore,
+) -> Option<String> {
+    let history = get_message_history(kv, group_id).await;
+
+    // Get the previous message (the last message in history)
+    if let Some(previous_message) = history.get_current_message() {
+        // Check if current message contains previous message (case-insensitive)
+        let current_lower = current_message.to_lowercase();
+        let previous_lower = previous_message.to_lowercase();
+
+        if current_lower.contains(&previous_lower) {
+            // Return the previous message in lowercase
+            return Some(previous_message.to_lowercase());
+        }
+    }
+
+    None
+}
+
 async fn send_reply(
     reply_token: &str,
     text: &str,
@@ -189,12 +256,45 @@ async fn send_reply(
 
     // Check if replies are enabled
     if !is_replies_enabled(kv).await && has_group_id {
-        console_log!("Replies are disabled, ignoring message from user {}", user_id);
+        console_log!(
+            "Replies are disabled, ignoring message from user {}",
+            user_id
+        );
         return Ok(());
     }
 
-    if !is_dolphin_message && !is_all_message && !is_all_plus_message {
+    // Check for repeated messages in group conversations
+    if has_group_id {
+        if let Some(group_id) = &source.group_id {
+            // Skip repeated message check for commands (@dolphin, @on, @off)
+            if !is_dolphin_message && !is_all_plus_message && !is_off_command && !is_on_command {
+                if let Some(repeated_reply) = check_repeated_message(text, group_id, kv).await {
+                    // Update message history with current message
+                    let mut history = get_message_history(kv, group_id).await;
+                    history.add_message(text.to_string());
+                    let _ = save_message_history(kv, group_id, &history).await;
+
+                    // Reply with the previous message in lowercase
+                    send_line_reply(reply_token, &repeated_reply, env).await?;
+                    console_log!(
+                        "Repeated message detected in group {}: {}",
+                        group_id,
+                        repeated_reply
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    if !is_dolphin_message && !is_all_plus_message {
         if has_group_id {
+            // Update message history for group messages
+            if let Some(group_id) = &source.group_id {
+                let mut history = get_message_history(kv, group_id).await;
+                history.add_message(text.to_string());
+                let _ = save_message_history(kv, group_id, &history).await;
+            }
             return Ok(());
         }
 
@@ -260,6 +360,16 @@ async fn send_reply(
         &user_id[0..4],
         message_content
     );
+
+    // Update message history for group messages
+    if has_group_id {
+        if let Some(group_id) = &source.group_id {
+            let mut history = get_message_history(kv, group_id).await;
+            history.add_message(text.to_string());
+            let _ = save_message_history(kv, group_id, &history).await;
+        }
+    }
+
     Ok(())
 }
 
@@ -292,7 +402,10 @@ async fn create_response_msg(
                     console_error!("Failed to send broadcast message: {}", e);
                     format!("❌ Failed to broadcast message: \"{}\"", message_content)
                 } else {
-                    format!("📢 Broadcast message sent to group: \"{}\"", message_content)
+                    format!(
+                        "📢 Broadcast message sent to group: \"{}\"",
+                        message_content
+                    )
                 }
             } else {
                 format!("❌ Broadcast configuration not found")
@@ -359,8 +472,7 @@ async fn send_line_reply(reply_token: &str, reply_text: &str, env: &Env) -> Resu
     init.with_headers(headers);
     init.with_body(Some(body.into()));
 
-    let request =
-        Request::new_with_init("https://api.line.me/v2/bot/message/reply", &init)?;
+    let request = Request::new_with_init("https://api.line.me/v2/bot/message/reply", &init)?;
     let mut response = Fetch::Request(request).send().await?;
 
     let status = response.status_code();
@@ -445,31 +557,41 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let env = ctx.env;
             let kv = env.kv("DOLPHIN_REPLY_STATE")?;
 
-            // Get the channel secret for signature verification
-            let channel_secret = env
-                .secret("LINE_CHANNEL_SECRET")
-                .map_err(|_| "LINE_CHANNEL_SECRET must be set")?
-                .to_string();
-
             // Get the raw body for signature verification
             let body_bytes = req.bytes().await?;
 
-            // Verify signature
-            let signature_valid = match req.headers().get("x-line-signature") {
-                Ok(Some(sig)) => verify_signature(&body_bytes, &sig, &channel_secret),
-                Ok(None) => {
-                    console_error!("Missing signature header");
-                    false
-                }
-                Err(e) => {
-                    console_error!("Error reading headers: {}", e);
-                    false
-                }
-            };
+            // Skip signature verification in dev mode
+            let skip_verification = env
+                .var("SKIP_SIGNATURE_VERIFICATION")
+                .map(|v| v.to_string() == "true")
+                .unwrap_or(false);
 
-            if !signature_valid {
-                console_error!("Invalid or missing signature");
-                return Response::error("Unauthorized", 401);
+            if !skip_verification {
+                // Get the channel secret for signature verification
+                let channel_secret = env
+                    .secret("LINE_CHANNEL_SECRET")
+                    .map_err(|_| "LINE_CHANNEL_SECRET must be set")?
+                    .to_string();
+
+                // Verify signature
+                let signature_valid = match req.headers().get("x-line-signature") {
+                    Ok(Some(sig)) => verify_signature(&body_bytes, &sig, &channel_secret),
+                    Ok(None) => {
+                        console_error!("Missing signature header");
+                        false
+                    }
+                    Err(e) => {
+                        console_error!("Error reading headers: {}", e);
+                        false
+                    }
+                };
+
+                if !signature_valid {
+                    console_error!("Invalid or missing signature");
+                    return Response::error("Unauthorized", 401);
+                }
+            } else {
+                console_log!("⚠️  Dev mode: Skipping signature verification");
             }
 
             // Parse webhook request

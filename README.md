@@ -77,4 +77,25 @@ npx wrangler secret put LINE_CHANNEL_SECRET
 npx wrangler deploy
 ```
 
+### Option 3: Self-hosted with workerd (VPS)
+Run the Workers build on your own VPS using [workerd](https://github.com/cloudflare/workerd):
+
+```bash
+# Build the worker
+cargo install worker-build && worker-build --release
+
+# Create KV storage directory
+mkdir -p kv-data
+
+# Edit config.capnp with your credentials and run
+workerd serve config.capnp
+```
+
+Edit `config.capnp` to set your `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_CHANNEL_SECRET`,
+and any `DOLPHIN_USER_TO_GROUP` bindings. The service listens on the port
+specified in the config (default: 3002).
+
+You will need a reverse proxy (e.g. nginx or caddy) in front to terminate TLS,
+since LINE requires an HTTPS webhook URL.
+
 The dolphin awaits your questions! 🐬✨

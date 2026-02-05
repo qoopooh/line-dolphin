@@ -24,3 +24,7 @@ reply_state.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# workerd
+config.capnp
+node_modules/

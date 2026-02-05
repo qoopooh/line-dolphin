@@ -12,6 +12,8 @@ preview_id = "aa22be950c1449b686aa20c250172f12"
 
 [vars]
 # Non-sensitive environment variables
+# Set SKIP_SIGNATURE_VERIFICATION=true for local dev (skip LINE signature verification)
+# SKIP_SIGNATURE_VERIFICATION = "true"  # Uncomment for local dev
 
 # Use 'wrangler secret put' for sensitive values:
 # wrangler secret put LINE_CHANNEL_ACCESS_TOKEN

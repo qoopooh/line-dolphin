@@ -129,6 +129,27 @@ npx wrangler dev
 
 This starts a local server at `http://localhost:8787`.
 
+**Skip Signature Verification in Dev Mode:**
+
+To skip LINE signature verification during local development, you can:
+
+1. **Option 1: Use `.dev.vars` file** (recommended for local dev):
+   ```bash
+   # Create .dev.vars file in project root
+   echo "SKIP_SIGNATURE_VERIFICATION=true" > .dev.vars
+   ```
+
+2. **Option 2: Set via command line**:
+   ```bash
+   npx wrangler dev --var SKIP_SIGNATURE_VERIFICATION:true
+   ```
+
+3. **Option 3: Add to `wrangler.toml`** (uncomment the line in `[vars]` section):
+   ```toml
+   [vars]
+   SKIP_SIGNATURE_VERIFICATION = "true"
+   ```
+
 **Note:** LINE webhooks require HTTPS, so you'll need a tool like ngrok for local testing:
 
 ```bash
@@ -138,6 +159,8 @@ ngrok http 8787
 # Use the ngrok HTTPS URL for LINE webhook
 https://abc123.ngrok.io/webhook
 ```
+
+⚠️ **Important:** Never set `SKIP_SIGNATURE_VERIFICATION=true` in production! Always verify signatures in deployed workers.
 
 ### View Logs
 

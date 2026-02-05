@@ -1,0 +1,27 @@
+using Workerd = import "/workerd/workerd.capnp";
+
+const config :Workerd.Config = (
+  services = [
+    (name = "main", worker = .mainWorker),
+    (name = "kv-storage", disk = "kv-data"),
+  ],
+  sockets = [
+    (name = "http", address = "*:8080", http = (), service = "main"),
+  ],
+);
+
+const mainWorker :Workerd.Worker = (
+  compatibilityDate = "2024-01-01",
+  modules = [
+    (name = "index.js", esModule = embed "build/index.js"),
+    (name = "index_bg.wasm", wasm = embed "build/index_bg.wasm"),
+  ],
+  bindings = [
+    (name = "LINE_CHANNEL_ACCESS_TOKEN", text = "your_channel_access_token_here"),
+    (name = "LINE_CHANNEL_SECRET", text = "your_channel_secret_here"),
+    (name = "DOLPHIN_REPLY_STATE", kvNamespace = "kv-storage"),
+    # Optional: broadcast configurations
+    # (name = "DOLPHIN_USER_TO_GROUP1", text = "user_id_1:group_id_1"),
+    # (name = "DOLPHIN_USER_TO_GROUP2", text = "user_id_2:group_id_2"),
+  ],
+);
