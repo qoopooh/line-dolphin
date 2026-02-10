@@ -196,11 +196,11 @@ async fn check_repeated_message(
 
     // Get the previous message (the last message in history)
     if let Some(previous_message) = history.get_current_message() {
-        // Check if current message contains previous message (case-insensitive)
+        // Check if current message has previous message (case-insensitive)
         let current_lower = current_message.to_lowercase();
         let previous_lower = previous_message.to_lowercase();
 
-        if current_lower.contains(&previous_lower) {
+        if current_lower.starts_with(&previous_lower) {
             // Return the previous message in lowercase
             return Some(previous_message.to_lowercase());
         }
