@@ -143,27 +143,33 @@ async fn set_replies_enabled(kv: &kv::KvStore, enabled: bool) -> Result<()> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct MessageEntry {
+    user_id: String,
+    message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 struct MessageHistory {
-    messages: Vec<String>,
+    entries: Vec<MessageEntry>,
 }
 
 impl MessageHistory {
     fn new() -> Self {
         MessageHistory {
-            messages: Vec::new(),
+            entries: Vec::new(),
         }
     }
 
-    fn add_message(&mut self, message: String) {
-        self.messages.push(message);
-        // Keep only the last 2 messages
-        if self.messages.len() > 2 {
-            self.messages.remove(0);
+    fn add_message(&mut self, user_id: String, message: String) {
+        self.entries.push(MessageEntry { user_id, message });
+        // Keep only the last 2 entries
+        if self.entries.len() > 2 {
+            self.entries.remove(0);
         }
     }
 
-    fn get_current_message(&self) -> Option<&String> {
-        self.messages.last()
+    fn get_last_entry(&self) -> Option<&MessageEntry> {
+        self.entries.last()
     }
 }
 
@@ -189,20 +195,24 @@ async fn save_message_history(
 
 async fn check_repeated_message(
     current_message: &str,
+    current_user_id: &str,
     group_id: &str,
     kv: &kv::KvStore,
 ) -> Option<String> {
     let history = get_message_history(kv, group_id).await;
 
-    // Get the previous message (the last message in history)
-    if let Some(previous_message) = history.get_current_message() {
-        // Check if current message has previous message (case-insensitive)
-        let current_lower = current_message.to_lowercase();
-        let previous_lower = previous_message.to_lowercase();
+    // Get the previous message (the last entry in history)
+    if let Some(last_entry) = history.get_last_entry() {
+        // Only trigger repeat if the sender is different
+        if last_entry.user_id != current_user_id {
+            // Check if current message has previous message (case-insensitive)
+            let current_lower = current_message.to_lowercase();
+            let previous_lower = last_entry.message.to_lowercase();
 
-        if current_lower.starts_with(&previous_lower) {
-            // Return the previous message in lowercase
-            return Some(previous_message.to_lowercase());
+            if current_lower.starts_with(&previous_lower) {
+                // Return the previous message in lowercase
+                return Some(last_entry.message.to_lowercase());
+            }
         }
     }
 
@@ -268,10 +278,12 @@ async fn send_reply(
         if let Some(group_id) = &source.group_id {
             // Skip repeated message check for commands (@dolphin, @on, @off)
             if !is_dolphin_message && !is_all_plus_message && !is_off_command && !is_on_command {
-                if let Some(repeated_reply) = check_repeated_message(text, group_id, kv).await {
+                if let Some(repeated_reply) =
+                    check_repeated_message(text, user_id, group_id, kv).await
+                {
                     // Update message history with current message
                     let mut history = get_message_history(kv, group_id).await;
-                    history.add_message(text.to_string());
+                    history.add_message(user_id.to_string(), text.to_string());
                     let _ = save_message_history(kv, group_id, &history).await;
 
                     // Reply with the previous message in lowercase
@@ -292,7 +304,7 @@ async fn send_reply(
             // Update message history for group messages
             if let Some(group_id) = &source.group_id {
                 let mut history = get_message_history(kv, group_id).await;
-                history.add_message(text.to_string());
+                history.add_message(user_id.to_string(), text.to_string());
                 let _ = save_message_history(kv, group_id, &history).await;
             }
             return Ok(());
@@ -365,7 +377,7 @@ async fn send_reply(
     if has_group_id {
         if let Some(group_id) = &source.group_id {
             let mut history = get_message_history(kv, group_id).await;
-            history.add_message(text.to_string());
+            history.add_message(user_id.to_string(), text.to_string());
             let _ = save_message_history(kv, group_id, &history).await;
         }
     }
