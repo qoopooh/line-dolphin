@@ -59,9 +59,5 @@ jobs:
               cargo install worker-build --locked
             fi
 
-            if ! command -v wrangler >/dev/null 2>&1; then
-              npm install -g wrangler
-            fi
-
-            wrangler deploy
+            npx --yes wrangler deploy
           "'
