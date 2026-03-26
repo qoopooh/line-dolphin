@@ -23,6 +23,51 @@ rustup update stable
 
 ## Setup Steps
 
+### GitHub Flow on a VPS Runner
+
+If you want `git push origin main` to deploy from your VPS, this repo now includes
+[`deploy.yml`](.github/workflows/deploy.yml), which runs `wrangler deploy` on a
+GitHub Actions self-hosted runner.
+
+The intended flow is:
+
+1. Install a GitHub Actions runner on the VPS
+2. Label it `vps` and `line-dolphin`
+3. Push to `main`
+4. GitHub schedules the workflow on that VPS runner
+5. The runner checks out the repo and runs `wrangler deploy`
+
+This keeps the deploy execution on your machine instead of GitHub-hosted runners.
+
+### 0. Prepare the VPS Runner
+
+Install the GitHub Actions runner on the VPS from your repository settings:
+
+1. Go to GitHub: `Settings -> Actions -> Runners -> New self-hosted runner`
+2. Pick Linux
+3. Run the install commands GitHub gives you on the VPS
+
+When configuring the runner, give it these labels:
+
+```text
+self-hosted,vps,line-dolphin
+```
+
+The workflow uses those labels in `runs-on`, so deployment jobs will land on that machine.
+
+Install the build tools once on the VPS:
+
+```bash
+curl https://sh.rustup.rs -sSf | sh
+source ~/.cargo/env
+rustup target add wasm32-unknown-unknown
+
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+You do not need to install `worker-build` or `wrangler` manually; the workflow installs them if missing.
+
 ### 1. Install Wrangler CLI
 
 ```bash
@@ -34,6 +79,17 @@ npm install -g wrangler
 ```bash
 npx wrangler login
 ```
+
+For GitHub Actions, prefer an API token instead of interactive login.
+
+Create a Cloudflare API token with Workers edit permissions, then add these GitHub repository secrets:
+
+```text
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+```
+
+The workflow reads those secrets and passes them to `wrangler deploy`.
 
 ### 3. Create KV Namespace
 
@@ -82,15 +138,19 @@ npx wrangler secret put DOLPHIN_USER_TO_GROUP2
 cargo install worker-build
 ```
 
-### 6. Replace Cargo.toml
+### 6. Confirm Cargo.toml is already the Workers version
 
-The Workers version uses a different Cargo.toml. Replace your current one:
+This repository is already configured for Cloudflare Workers. You do not need to swap in a separate `Cargo.toml`.
 
 ```bash
-cp Cargo.workers.toml Cargo.toml
+grep '^name = ' Cargo.toml
 ```
 
-Or manually update `Cargo.toml` to match `Cargo.workers.toml`.
+You should see:
+
+```toml
+name = "line-dolphin-worker"
+```
 
 ### 7. Build and Deploy
 
@@ -98,6 +158,35 @@ Or manually update `Cargo.toml` to match `Cargo.workers.toml`.
 # Deploy to Cloudflare Workers
 npx wrangler deploy
 ```
+
+With the GitHub flow configured, deployment becomes:
+
+```bash
+git checkout -b my-change
+# make changes
+git commit -am "..."
+git push origin my-change
+# open and merge PR
+git checkout main
+git pull --ff-only
+git push origin main
+```
+
+Or, if your main branch is protected and merged through PRs, the deploy runs automatically when GitHub updates `main`.
+
+### 8. First GitHub-Triggered Deploy
+
+After adding the repository secrets and bringing the runner online:
+
+```bash
+git push origin main
+```
+
+Then check:
+
+1. GitHub: `Actions -> Deploy Worker`
+2. The runner status under `Settings -> Actions -> Runners`
+3. The deployed worker URL in the workflow logs
 
 After deployment, you'll get a URL like:
 ```

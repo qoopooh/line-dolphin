@@ -1,0 +1,62 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Wrangler Deploy
+    runs-on:
+      - self-hosted
+      - vps
+      - line-dolphin
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install worker-build
+        shell: bash
+        run: |
+          if ! command -v worker-build >/dev/null 2>&1; then
+            cargo install worker-build --locked
+          fi
+
+      - name: Install Wrangler
+        shell: bash
+        run: |
+          if ! command -v wrangler >/dev/null 2>&1; then
+            npm install -g wrangler
+          fi
+
+      - name: Verify Cloudflare credentials
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Deploy to Cloudflare Workers
+        run: wrangler deploy

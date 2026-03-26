@@ -6,8 +6,6 @@ Once upon a time, there was a peculiar dolphin who lived in the digital seas of 
 
 When you ask the dolphin a question by typing `@dolphin [your question]`, it calculates a secret checksum based on your user ID and message, then responds with "yes" if the sum is even, "no" if it's odd.
 
-But here's the weird part: if you ask about buying nuclear weapons, it ALWAYS says "yes" (don't ask why, even the dolphin doesn't know).
-
 ## How to Summon the Dolphin
 
 1. **Create a LINE Bot** at [LINE Developers Console](https://developers.line.biz/console)
@@ -32,7 +30,7 @@ You: @dolphin Will I win the lottery?
 Dolphin: no
 
 You: @dolphin Should I buy nuclear weapons?
-Dolphin: yes (always!)
+Dolphin: yes
 
 You: @dolphin Is this bot weird?
 Dolphin: yes
@@ -65,7 +63,6 @@ npm install -g wrangler
 cargo install worker-build
 
 # Setup
-cp Cargo.workers.toml Cargo.toml
 npx wrangler login
 npx wrangler kv:namespace create DOLPHIN_REPLY_STATE
 
@@ -76,6 +73,10 @@ npx wrangler secret put LINE_CHANNEL_SECRET
 # Deploy
 npx wrangler deploy
 ```
+
+For GitHub Flow from your VPS, use the self-hosted runner workflow in
+[`deploy.yml`](.github/workflows/deploy.yml) and follow
+[DEPLOYMENT-WORKERS.md](DEPLOYMENT-WORKERS.md).
 
 ### Option 3: Self-hosted with workerd (VPS)
 Run the Workers build on your own VPS using [workerd](https://github.com/cloudflare/workerd):

@@ -312,7 +312,7 @@ async fn send_reply(
 
         let reply_text = create_reply(user_id, text);
         send_line_reply(reply_token, &reply_text, env).await?;
-        console_log!("Reply sent (user_id: {}): {}", user_id, text);
+        console_log!("Reply to user {}: {}", user_id, text);
         return Ok(());
     }
 
