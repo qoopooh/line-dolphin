@@ -19,45 +19,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Deploy on VPS
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Start ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script_stop: true
-          script: |
-            bash -lc '
-              set -euo pipefail
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
 
-              APP_DIR="$HOME/git/line-dolphin"
+      - name: Add VPS host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
-              cd "$APP_DIR"
-              git fetch origin main
-              git checkout main
-              git pull --ff-only origin main
+      - name: Deploy on VPS
+        run: |
+          ssh "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -lc "
+            set -euo pipefail
 
-              if ! command -v cargo >/dev/null 2>&1; then
-                echo "cargo is not installed on the VPS"
-                exit 1
-              fi
+            APP_DIR=\$HOME/git/line-dolphin
 
-              if ! rustup target list --installed | grep -qx "wasm32-unknown-unknown"; then
-                rustup target add wasm32-unknown-unknown
-              fi
+            cd \"\$APP_DIR\"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
 
-              if ! command -v node >/dev/null 2>&1; then
-                echo "node is not installed on the VPS"
-                exit 1
-              fi
+            if ! command -v cargo >/dev/null 2>&1; then
+              echo cargo is not installed on the VPS
+              exit 1
+            fi
 
-              if ! command -v worker-build >/dev/null 2>&1; then
-                cargo install worker-build --locked
-              fi
+            if ! rustup target list --installed | grep -qx wasm32-unknown-unknown; then
+              rustup target add wasm32-unknown-unknown
+            fi
 
-              if ! command -v wrangler >/dev/null 2>&1; then
-                npm install -g wrangler
-              fi
+            if ! command -v node >/dev/null 2>&1; then
+              echo node is not installed on the VPS
+              exit 1
+            fi
 
-              wrangler deploy
-            '
+            if ! command -v worker-build >/dev/null 2>&1; then
+              cargo install worker-build --locked
+            fi
+
+            if ! command -v wrangler >/dev/null 2>&1; then
+              npm install -g wrangler
+            fi
+
+            wrangler deploy
+          "'
