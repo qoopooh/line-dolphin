@@ -74,8 +74,7 @@ npx wrangler secret put LINE_CHANNEL_SECRET
 npx wrangler deploy
 ```
 
-For GitHub Flow from your VPS, use the self-hosted runner workflow in
-[`deploy.yml`](.github/workflows/deploy.yml) and follow
+For GitHub-triggered deploys from your VPS, see
 [DEPLOYMENT-WORKERS.md](DEPLOYMENT-WORKERS.md).
 
 ### Option 3: Self-hosted with workerd (VPS)

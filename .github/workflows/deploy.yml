@@ -15,48 +15,47 @@ concurrency:
 
 jobs:
   deploy:
-    name: Wrangler Deploy
-    runs-on:
-      - self-hosted
-      - vps
-      - line-dolphin
+    name: Wrangler Deploy Over SSH
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v1.2.0
         with:
-          targets: wasm32-unknown-unknown
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+            APP_DIR="$HOME/git/line-dolphin"
 
-      - name: Install worker-build
-        shell: bash
-        run: |
-          if ! command -v worker-build >/dev/null 2>&1; then
-            cargo install worker-build --locked
-          fi
+            cd "$APP_DIR"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
 
-      - name: Install Wrangler
-        shell: bash
-        run: |
-          if ! command -v wrangler >/dev/null 2>&1; then
-            npm install -g wrangler
-          fi
+            if ! command -v cargo >/dev/null 2>&1; then
+              echo "cargo is not installed on the VPS"
+              exit 1
+            fi
 
-      - name: Verify Cloudflare credentials
-        shell: bash
-        run: |
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
+            if ! rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
+              rustup target add wasm32-unknown-unknown
+            fi
 
-      - name: Deploy to Cloudflare Workers
-        run: wrangler deploy
+            if ! command -v node >/dev/null 2>&1; then
+              echo "node is not installed on the VPS"
+              exit 1
+            fi
+
+            if ! command -v worker-build >/dev/null 2>&1; then
+              cargo install worker-build --locked
+            fi
+
+            if ! command -v wrangler >/dev/null 2>&1; then
+              npm install -g wrangler
+            fi
+
+            wrangler deploy

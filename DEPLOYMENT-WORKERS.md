@@ -23,39 +23,43 @@ rustup update stable
 
 ## Setup Steps
 
-### GitHub Flow on a VPS Runner
+### GitHub Flow over SSH to the VPS
 
 If you want `git push origin main` to deploy from your VPS, this repo now includes
-[`deploy.yml`](.github/workflows/deploy.yml), which runs `wrangler deploy` on a
-GitHub Actions self-hosted runner.
+[`deploy.yml`](.github/workflows/deploy.yml), which uses GitHub Actions to SSH
+into your VPS and run `wrangler deploy` there.
 
 The intended flow is:
 
-1. Install a GitHub Actions runner on the VPS
-2. Label it `vps` and `line-dolphin`
-3. Push to `main`
-4. GitHub schedules the workflow on that VPS runner
-5. The runner checks out the repo and runs `wrangler deploy`
+1. GitHub detects a push to `main`
+2. GitHub starts the workflow on `ubuntu-latest`
+3. The workflow SSHes into your VPS
+4. The VPS updates the repo checkout
+5. The VPS runs `wrangler deploy`
 
-This keeps the deploy execution on your machine instead of GitHub-hosted runners.
+This keeps the actual deploy execution on your machine while GitHub only acts as the trigger.
 
-### 0. Prepare the VPS Runner
+### 0. Prepare SSH Access from GitHub Actions
 
-Install the GitHub Actions runner on the VPS from your repository settings:
-
-1. Go to GitHub: `Settings -> Actions -> Runners -> New self-hosted runner`
-2. Pick Linux
-3. Run the install commands GitHub gives you on the VPS
-
-When configuring the runner, give it these labels:
+Add these GitHub repository secrets:
 
 ```text
-self-hosted,vps,line-dolphin
+VPS_HOST
+VPS_USER
+VPS_SSH_KEY
 ```
 
-The workflow uses those labels in `runs-on`, so deployment jobs will land on that machine.
+`VPS_SSH_KEY` should be the private key GitHub Actions will use. Put the matching public key in `~/.ssh/authorized_keys` for `VPS_USER` on the server.
 
-Install the build tools once on the VPS:
+The workflow currently deploys from:
+
+```text
+$HOME/git/line-dolphin
+```
+
+on the VPS, so make sure this repository already exists there and `git pull --ff-only origin main` works for that checkout.
+
+### 1. Prepare the VPS
 
 ```bash
 curl https://sh.rustup.rs -sSf | sh
@@ -68,30 +72,21 @@ sudo apt-get install -y nodejs
 
 You do not need to install `worker-build` or `wrangler` manually; the workflow installs them if missing.
 
-### 1. Install Wrangler CLI
+### 2. Install Wrangler CLI
 
 ```bash
 npm install -g wrangler
 ```
 
-### 2. Login to Cloudflare
+### 3. Login to Cloudflare
 
 ```bash
 npx wrangler login
 ```
 
-For GitHub Actions, prefer an API token instead of interactive login.
+Because the deploy runs on your VPS, this login happens once on the VPS itself. GitHub does not need your Cloudflare token in this SSH-based setup.
 
-Create a Cloudflare API token with Workers edit permissions, then add these GitHub repository secrets:
-
-```text
-CLOUDFLARE_API_TOKEN
-CLOUDFLARE_ACCOUNT_ID
-```
-
-The workflow reads those secrets and passes them to `wrangler deploy`.
-
-### 3. Create KV Namespace
+### 4. Create KV Namespace
 
 Create a KV namespace for storing reply state:
 
@@ -112,7 +107,7 @@ id = "your-production-kv-id-here"
 preview_id = "your-preview-kv-id-here"
 ```
 
-### 4. Set Secrets
+### 5. Set Secrets
 
 Set your LINE credentials and broadcast configurations:
 
@@ -132,13 +127,13 @@ npx wrangler secret put DOLPHIN_USER_TO_GROUP2
 # Add more as needed (up to DOLPHIN_USER_TO_GROUP10)
 ```
 
-### 5. Install worker-build
+### 6. Install worker-build
 
 ```bash
 cargo install worker-build
 ```
 
-### 6. Confirm Cargo.toml is already the Workers version
+### 7. Confirm Cargo.toml is already the Workers version
 
 This repository is already configured for Cloudflare Workers. You do not need to swap in a separate `Cargo.toml`.
 
@@ -152,7 +147,7 @@ You should see:
 name = "line-dolphin-worker"
 ```
 
-### 7. Build and Deploy
+### 8. Build and Deploy
 
 ```bash
 # Deploy to Cloudflare Workers
@@ -174,9 +169,9 @@ git push origin main
 
 Or, if your main branch is protected and merged through PRs, the deploy runs automatically when GitHub updates `main`.
 
-### 8. First GitHub-Triggered Deploy
+### 9. First GitHub-Triggered Deploy
 
-After adding the repository secrets and bringing the runner online:
+After adding the SSH secrets and verifying the VPS checkout:
 
 ```bash
 git push origin main
@@ -185,7 +180,7 @@ git push origin main
 Then check:
 
 1. GitHub: `Actions -> Deploy Worker`
-2. The runner status under `Settings -> Actions -> Runners`
+2. The SSH step output in the workflow logs
 3. The deployed worker URL in the workflow logs
 
 After deployment, you'll get a URL like:
