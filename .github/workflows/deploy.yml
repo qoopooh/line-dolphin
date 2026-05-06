@@ -55,9 +55,5 @@ jobs:
               exit 1
             fi
 
-            if ! command -v worker-build >/dev/null 2>&1; then
-              cargo install worker-build --locked
-            fi
-
             npx --yes wrangler deploy
           "'
