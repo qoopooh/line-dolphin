@@ -363,6 +363,63 @@ npx wrangler kv:key get --binding DOLPHIN_REPLY_STATE "enabled" --preview false
 3. Check logs: `npx wrangler tail`
 4. Test signature verification with LINE's webhook test
 
+## Reduce KV Writes (optional)
+
+The repeated-message echo feature writes to KV on almost every group message (`msg_history:<group_id>`). If you're hitting the free-tier 1,000-writes/day limit, set the `DISABLE_REPEAT_DETECTION` env var to `true`. The bot still answers `@dolphin` / `@all` / `@on` / `@off` normally; only the "echo previous message in lowercase when a different user repeats it" behavior is skipped, and `msg_history:*` is never read or written.
+
+`DISABLE_REPEAT_DETECTION` is a plain (non-secret) var, so it's set via `[vars]` in `wrangler.toml` or via `--var` at deploy time — **not** via `wrangler secret put`.
+
+### Option A — commit it in `wrangler.toml` (persists across deploys)
+
+Uncomment the line in the `[vars]` section:
+
+```toml
+[vars]
+DISABLE_REPEAT_DETECTION = "true"
+```
+
+Then redeploy:
+
+```bash
+npx wrangler deploy
+```
+
+### Option B — pass at deploy time without editing the file
+
+```bash
+npx wrangler deploy --var DISABLE_REPEAT_DETECTION:true
+```
+
+Note: `--var` overrides `[vars]` for that single deploy. The next `wrangler deploy` without the flag falls back to whatever is in `wrangler.toml`.
+
+### Option C — Cloudflare Dashboard
+
+Workers & Pages → your worker → **Settings → Variables and Secrets** → add `DISABLE_REPEAT_DETECTION = true` as a plaintext variable. ⚠️ The next `wrangler deploy` will overwrite dashboard-only vars with whatever is in `wrangler.toml`, so prefer Option A for anything you want to survive deploys.
+
+### Local dev
+
+Add it to `.dev.vars` alongside `SKIP_SIGNATURE_VERIFICATION`:
+
+```bash
+echo "DISABLE_REPEAT_DETECTION=true" >> .dev.vars
+```
+
+Or pass it inline:
+
+```bash
+npx wrangler dev --var DISABLE_REPEAT_DETECTION:true
+```
+
+### Verify it's active
+
+After deploying, send a non-command message in a group and confirm via `npx wrangler tail` that no `msg_history:*` writes occur, and check KV:
+
+```bash
+npx wrangler kv key list --binding DOLPHIN_REPLY_STATE | grep msg_history
+```
+
+No new keys should appear over time. To re-enable, remove the var (or set `"false"`) and redeploy.
+
 ## Cost Estimate
 
 Cloudflare Workers Free Tier:

@@ -225,6 +225,7 @@ async fn send_reply(
     source: &Source,
     env: &Env,
     kv: &kv::KvStore,
+    disable_repeat_detection: bool,
 ) -> Result<()> {
     let user_id = source.user_id.as_deref().unwrap_or("unknown");
     let has_group_id = source.group_id.is_some();
@@ -274,7 +275,7 @@ async fn send_reply(
     }
 
     // Check for repeated messages in group conversations
-    if has_group_id {
+    if !disable_repeat_detection && has_group_id {
         if let Some(group_id) = &source.group_id {
             // Skip repeated message check for commands (@dolphin, @on, @off)
             if !is_dolphin_message && !is_all_plus_message && !is_off_command && !is_on_command {
@@ -302,10 +303,12 @@ async fn send_reply(
     if !is_dolphin_message && !is_all_plus_message {
         if has_group_id {
             // Update message history for group messages
-            if let Some(group_id) = &source.group_id {
-                let mut history = get_message_history(kv, group_id).await;
-                history.add_message(user_id.to_string(), text.to_string());
-                let _ = save_message_history(kv, group_id, &history).await;
+            if !disable_repeat_detection {
+                if let Some(group_id) = &source.group_id {
+                    let mut history = get_message_history(kv, group_id).await;
+                    history.add_message(user_id.to_string(), text.to_string());
+                    let _ = save_message_history(kv, group_id, &history).await;
+                }
             }
             return Ok(());
         }
@@ -374,7 +377,7 @@ async fn send_reply(
     );
 
     // Update message history for group messages
-    if has_group_id {
+    if !disable_repeat_detection && has_group_id {
         if let Some(group_id) = &source.group_id {
             let mut history = get_message_history(kv, group_id).await;
             history.add_message(user_id.to_string(), text.to_string());
@@ -578,6 +581,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 .map(|v| v.to_string() == "true")
                 .unwrap_or(false);
 
+            let disable_repeat_detection = env
+                .var("DISABLE_REPEAT_DETECTION")
+                .map(|v| v.to_string() == "true")
+                .unwrap_or(false);
+
             if !skip_verification {
                 // Get the channel secret for signature verification
                 let channel_secret = env
@@ -628,9 +636,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                             if let Some(text) = &message.text {
                                 if let Some(reply_token) = &event.reply_token {
                                     if !reply_token.is_empty() {
-                                        if let Err(e) =
-                                            send_reply(reply_token, text, &event.source, &env, &kv)
-                                                .await
+                                        if let Err(e) = send_reply(
+                                            reply_token,
+                                            text,
+                                            &event.source,
+                                            &env,
+                                            &kv,
+                                            disable_repeat_detection,
+                                        )
+                                        .await
                                         {
                                             console_error!("Failed to send reply: {}", e);
                                         }

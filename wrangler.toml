@@ -15,6 +15,10 @@ preview_id = "aa22be950c1449b686aa20c250172f12"
 # Set SKIP_SIGNATURE_VERIFICATION=true for local dev (skip LINE signature verification)
 # SKIP_SIGNATURE_VERIFICATION = "true"  # Uncomment for local dev
 
+# Set DISABLE_REPEAT_DETECTION=true to skip the repeated-message echo feature
+# and eliminate per-message KV writes (msg_history:*).
+# DISABLE_REPEAT_DETECTION = "true"
+
 # Use 'wrangler secret put' for sensitive values:
 # wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 # wrangler secret put LINE_CHANNEL_SECRET
