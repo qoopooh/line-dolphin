@@ -226,6 +226,7 @@ async fn send_reply(
     let is_dolphin_message = trimmed_text.starts_with("@dolphin");
     let is_off_command = trimmed_text.starts_with("@off");
     let is_on_command = trimmed_text.starts_with("@on");
+    let is_version_command = trimmed_text.starts_with("@version");
 
     // Check for @all+XXXX pattern or "@all"
     let all_plus_pattern = Regex::new(r"^@all\+(\w{4})").unwrap();
@@ -255,6 +256,14 @@ async fn send_reply(
                 }
             }
         }
+    }
+
+    // Handle @version command (answers even when replies are disabled)
+    if is_version_command {
+        let reply_text = format!("🐬 line-dolphin v{}", env!("CARGO_PKG_VERSION"));
+        send_line_reply(reply_token, &reply_text, env).await?;
+        console_log!("Version requested by user {}", user_id);
+        return Ok(());
     }
 
     // Check if replies are enabled

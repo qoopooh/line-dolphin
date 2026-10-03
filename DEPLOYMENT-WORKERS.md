@@ -316,6 +316,7 @@ All original features are supported:
 - ✅ Broadcast messages (@all command)
 - ✅ Targeted broadcast (@all+XXXX command)
 - ✅ Reply on/off toggle (@on/@off commands)
+- ✅ Version check (@version command)
 - ✅ Special "buy nuclear" logic
 
 ## Monitoring
