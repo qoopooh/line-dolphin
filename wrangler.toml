@@ -10,13 +10,20 @@ binding = "DOLPHIN_REPLY_STATE"
 id = "271fcd76e725433f855521485fcd68fc"
 preview_id = "aa22be950c1449b686aa20c250172f12"
 
+# Last message per group for repeated-message echo detection (msg_history table)
+[[d1_databases]]
+binding = "DOLPHIN_DB"
+database_name = "line-dolphin"
+database_id = "02d2e6e3-be57-47cd-868f-7bdd45a6385f"
+migrations_dir = "migrations"
+
 [vars]
 # Non-sensitive environment variables
 # Set SKIP_SIGNATURE_VERIFICATION=true for local dev (skip LINE signature verification)
 # SKIP_SIGNATURE_VERIFICATION = "true"  # Uncomment for local dev
 
 # Set DISABLE_REPEAT_DETECTION=true to skip the repeated-message echo feature
-# and eliminate per-message KV writes (msg_history:*).
+# (kill switch; history lives in D1, so this is not needed to save KV writes).
 # DISABLE_REPEAT_DETECTION = "true"
 
 # Use 'wrangler secret put' for sensitive values:

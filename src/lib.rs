@@ -142,81 +142,72 @@ async fn set_replies_enabled(kv: &kv::KvStore, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 struct MessageEntry {
     user_id: String,
     message: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct MessageHistory {
-    entries: Vec<MessageEntry>,
-}
-
-impl MessageHistory {
-    fn new() -> Self {
-        MessageHistory {
-            entries: Vec::new(),
+async fn get_last_message(db: &D1Database, group_id: &str) -> Option<MessageEntry> {
+    let result = db
+        .prepare("SELECT user_id, message FROM msg_history WHERE group_id = ?1")
+        .bind(&[group_id.into()]);
+    let statement = match result {
+        Ok(statement) => statement,
+        Err(e) => {
+            console_error!("Failed to bind msg_history query: {}", e);
+            return None;
+        }
+    };
+    match statement.first::<MessageEntry>(None).await {
+        Ok(entry) => entry,
+        Err(e) => {
+            console_error!("Failed to read msg_history for {}: {}", group_id, e);
+            None
         }
     }
+}
 
-    fn add_message(&mut self, user_id: String, message: String) {
-        self.entries.push(MessageEntry { user_id, message });
-        // Keep only the last 2 entries
-        if self.entries.len() > 2 {
-            self.entries.remove(0);
-        }
-    }
-
-    fn get_last_entry(&self) -> Option<&MessageEntry> {
-        self.entries.last()
+async fn save_last_message(db: &D1Database, group_id: &str, user_id: &str, message: &str) {
+    let result = db
+        .prepare(
+            "INSERT INTO msg_history (group_id, user_id, message, updated_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(group_id) DO UPDATE SET \
+             user_id = excluded.user_id, message = excluded.message, updated_at = excluded.updated_at",
+        )
+        .bind(&[
+            group_id.into(),
+            user_id.into(),
+            message.into(),
+            (Date::now().as_millis() as f64).into(),
+        ]);
+    let outcome = match result {
+        Ok(statement) => statement.run().await.map(|_| ()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = outcome {
+        console_error!("Failed to save msg_history for {}: {}", group_id, e);
     }
 }
 
-async fn get_message_history(kv: &kv::KvStore, group_id: &str) -> MessageHistory {
-    let key = format!("msg_history:{}", group_id);
-    match kv.get(&key).json::<MessageHistory>().await {
-        Ok(Some(history)) => history,
-        _ => MessageHistory::new(),
-    }
-}
-
-async fn save_message_history(
-    kv: &kv::KvStore,
-    group_id: &str,
-    history: &MessageHistory,
-) -> Result<()> {
-    let key = format!("msg_history:{}", group_id);
-    kv.put(&key, serde_json::to_string(history)?)?
-        .execute()
-        .await?;
-    Ok(())
-}
-
-async fn check_repeated_message(
-    current_message: &str,
+/// Returns the previous message in lowercase if a different user's message starts with it
+/// (case-insensitive).
+fn repeated_reply(
+    last_entry: &MessageEntry,
     current_user_id: &str,
-    group_id: &str,
-    kv: &kv::KvStore,
+    current_message: &str,
 ) -> Option<String> {
-    let history = get_message_history(kv, group_id).await;
-
-    // Get the previous message (the last entry in history)
-    if let Some(last_entry) = history.get_last_entry() {
-        // Only trigger repeat if the sender is different
-        if last_entry.user_id != current_user_id {
-            // Check if current message has previous message (case-insensitive)
-            let current_lower = current_message.to_lowercase();
-            let previous_lower = last_entry.message.to_lowercase();
-
-            if current_lower.starts_with(&previous_lower) {
-                // Return the previous message in lowercase
-                return Some(last_entry.message.to_lowercase());
-            }
-        }
+    if last_entry.user_id == current_user_id {
+        return None;
     }
 
-    None
+    let previous_lower = last_entry.message.to_lowercase();
+    if current_message.to_lowercase().starts_with(&previous_lower) {
+        Some(previous_lower)
+    } else {
+        None
+    }
 }
 
 async fn send_reply(
@@ -225,6 +216,7 @@ async fn send_reply(
     source: &Source,
     env: &Env,
     kv: &kv::KvStore,
+    db: &D1Database,
     disable_repeat_detection: bool,
 ) -> Result<()> {
     let user_id = source.user_id.as_deref().unwrap_or("unknown");
@@ -279,13 +271,12 @@ async fn send_reply(
         if let Some(group_id) = &source.group_id {
             // Skip repeated message check for commands (@dolphin, @on, @off)
             if !is_dolphin_message && !is_all_plus_message && !is_off_command && !is_on_command {
-                if let Some(repeated_reply) =
-                    check_repeated_message(text, user_id, group_id, kv).await
-                {
+                let repeated = get_last_message(db, group_id)
+                    .await
+                    .and_then(|last_entry| repeated_reply(&last_entry, user_id, text));
+                if let Some(repeated_reply) = repeated {
                     // Update message history with current message
-                    let mut history = get_message_history(kv, group_id).await;
-                    history.add_message(user_id.to_string(), text.to_string());
-                    let _ = save_message_history(kv, group_id, &history).await;
+                    save_last_message(db, group_id, user_id, text).await;
 
                     // Reply with the previous message in lowercase
                     send_line_reply(reply_token, &repeated_reply, env).await?;
@@ -305,9 +296,7 @@ async fn send_reply(
             // Update message history for group messages
             if !disable_repeat_detection {
                 if let Some(group_id) = &source.group_id {
-                    let mut history = get_message_history(kv, group_id).await;
-                    history.add_message(user_id.to_string(), text.to_string());
-                    let _ = save_message_history(kv, group_id, &history).await;
+                    save_last_message(db, group_id, user_id, text).await;
                 }
             }
             return Ok(());
@@ -379,9 +368,7 @@ async fn send_reply(
     // Update message history for group messages
     if !disable_repeat_detection && has_group_id {
         if let Some(group_id) = &source.group_id {
-            let mut history = get_message_history(kv, group_id).await;
-            history.add_message(user_id.to_string(), text.to_string());
-            let _ = save_message_history(kv, group_id, &history).await;
+            save_last_message(db, group_id, user_id, text).await;
         }
     }
 
@@ -571,6 +558,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/webhook", |mut req, ctx| async move {
             let env = ctx.env;
             let kv = env.kv("DOLPHIN_REPLY_STATE")?;
+            let db = env.d1("DOLPHIN_DB")?;
 
             // Get the raw body for signature verification
             let body_bytes = req.bytes().await?;
@@ -642,6 +630,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                                             &event.source,
                                             &env,
                                             &kv,
+                                            &db,
                                             disable_repeat_detection,
                                         )
                                         .await
@@ -688,5 +677,42 @@ mod tests {
 
         let result = verify_signature(body, invalid_signature, secret);
         assert!(!result);
+    }
+
+    fn entry(user_id: &str, message: &str) -> MessageEntry {
+        MessageEntry {
+            user_id: user_id.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_repeated_reply_same_user() {
+        let last = entry("U1", "Hello");
+        assert_eq!(repeated_reply(&last, "U1", "Hello"), None);
+    }
+
+    #[test]
+    fn test_repeated_reply_different_user_prefix() {
+        let last = entry("U1", "Hello");
+        assert_eq!(
+            repeated_reply(&last, "U2", "hello world"),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_repeated_reply_mixed_case() {
+        let last = entry("U1", "hElLo");
+        assert_eq!(
+            repeated_reply(&last, "U2", "HELLO"),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_repeated_reply_no_match() {
+        let last = entry("U1", "Hello");
+        assert_eq!(repeated_reply(&last, "U2", "Goodbye"), None);
     }
 }
